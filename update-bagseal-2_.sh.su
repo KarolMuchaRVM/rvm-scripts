@@ -1,0 +1,157 @@
+#!/bin/bash
+
+# Update bag seal changes. Includes:
+#   Require 1 bag seal code per bag seal
+#   Bag seal code must be unique to the RVM
+#   More specific error message on screen if bag seal is not created
+# Date: 10.04.2026
+# Author: Vilde Olsen
+
+
+BASE_USER="repant"
+if [[ "${R_BASE_USER}" ]]; then
+  BASE_USER="${R_BASE_USER}"
+fi
+
+BASE_DIR="/home/repant"
+if [[ "${R_BASE_DIR}" ]]; then
+  BASE_DIR="${R_BASE_DIR}"
+fi
+
+APP_DIR="$BASE_DIR/COSMOS"
+if [[ "${R_APP_DIR}" ]]; then
+  APP_DIR="${R_APP_DIR}"
+fi
+
+exit_script() {
+  echo "$2"
+  echo "$2" > $APP_DIR/outbox/feedback.txt
+  chown $BASE_USER:$BASE_USER $APP_DIR/outbox/feedback.txt
+  chmod 666 $APP_DIR/outbox/feedback.txt
+  exit $1
+}
+
+exit_and_stop_service() {
+  echo "$2"
+  echo "$2" > $APP_DIR/outbox/feedback.txt
+  chown $BASE_USER:$BASE_USER $APP_DIR/outbox/feedback.txt
+  chmod 666 $APP_DIR/outbox/feedback.txt
+  sudo -u $BASE_USER -i $APP_DIR/script/service_stop
+  exit $1
+}
+
+vercomp () {
+    if [[ $1 == $2 ]]
+    then
+        return 0
+    fi
+    local IFS=.
+    local i ver1=($1) ver2=($2)
+    # fill empty fields in ver1 with zeros
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++))
+    do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver1[@]}; i++))
+    do
+        if [[ -z ${ver2[i]} ]]
+        then
+            # fill empty fields in ver2 with zeros
+            ver2[i]=0
+        fi
+        if ((10#${ver1[i]} > 10#${ver2[i]}))
+        then
+            return 1
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]}))
+        then
+            return 2
+        fi
+    done
+    return 0
+}
+
+#check that the RVM has upgrade RPMs, just picking some random packages that where new in the last release
+CURRENT_VERSION=`rpm -q sensortest | sed 's/sensortest-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "2.0.22"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Cannot updated Poland Bag Seal. Packages have not been updated."
+fi
+
+CURRENT_VERSION=`rpm -q cleaning-tool | sed 's/cleaning-tool-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "4.1.5"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Cannot updated Poland Bag Seal. Packages have not been updated."
+fi
+
+while true; do
+  last_bottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_bottleList";' -t)
+  last_bottle_receipt_id="${last_bottle_receipt_id#"${last_bottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_bottle_receipt_id="${last_bottle_receipt_id%"${last_bottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace characters
+
+  last_crate_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_crateList";' -t)
+  last_crate_receipt_id="${last_crate_receipt_id#"${last_crate_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_crate_receipt_id="${last_crate_receipt_id%"${last_crate_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  last_cratebottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_cratebottleList";' -t)
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id#"${last_cratebottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id%"${last_cratebottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  next_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select "receiptNo" from "t_receiptManagement";' -t)
+  next_receipt_id="${next_receipt_id#"${next_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  next_receipt_id="${next_receipt_id%"${next_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  if [ "$last_bottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_crate_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_cratebottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  else
+	MACHINE_IN_USE=false
+  fi
+
+  if $MACHINE_IN_USE ; then
+      echo "The machine is in use, wait"
+      sleep 5
+  else
+    echo "Set machine in service mode"
+    sudo -u $BASE_USER -i $APP_DIR/script/service_start -f
+    break
+  fi
+done
+
+#check if bevesort is enabled
+BEVESORT=`cat $APP_DIR/CFG/developer_config.ini | grep Bevesort=true -c`
+
+#update packages from testing
+yum clean all --enablerepo=RVM-Testing,Repant-Testing
+yum -y install cosmos-8.15.3-26723.poland_spring_release.el7.centos empty-report-1.5.5-26723.poland_spring_release.el7.centos reMotion-2.13.12-26740.el7.noarch ReVend-5.6.7-27072.el7 --enablerepo=RVM-Testing,Repant-Testing
+
+#check that packages have been updated
+MODULE_VERSION=$(rpm -q cosmos | sed 's/cosmos-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
+if [ "$MODULE_VERSION" != "8.15.3-26723" ]; then
+  exit_and_stop_service 2 "Failed to update Poland Bag Seal. cosmos version is wrong"
+fi
+
+MODULE_VERSION=$(rpm -q empty-report | sed 's/empty-report-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
+if [ "$MODULE_VERSION" != "1.5.5-26723" ]; then
+  exit_and_stop_service 2 "Failed to update Poland Bag Seal. empty-report version is wrong"
+fi
+
+MODULE_VERSION=$(rpm -q reMotion | sed 's/reMotion-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//')
+if [ "$MODULE_VERSION" != "2.13.12-26740" ]; then
+  exit_and_stop_service 2 "Failed to update Poland Bag Seal. reMotion version is wrong"
+fi
+
+MODULE_VERSION=$(rpm -q empty-report | sed 's/empty-report-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
+if [ "$MODULE_VERSION" != "1.5.5-26723" ]; then
+  exit_and_stop_service 2 "Failed to update Poland Bag Seal. empty-report version is wrong"
+fi
+
+#Set expecting 1 bag seal code per bag seal
+php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader ExpectedBagSealCodeCount 1
+php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader BagSealCodeSeparator ,
+chown $BASE_USER:$BASE_USER $APP_DIR/CFG/developer_config.ini
+
+exit_and_stop_service 0 "Successfully updated Poland Bag Seal. Expecting 1 bag seal code per bag seal."
