@@ -1,0 +1,4 @@
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1eab", ATTRS{idProduct}=="1d06", SYMLINK+="ttyLOYALTY", OPTIONS+="link_priority=100", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="24ea", ATTRS{idProduct}=="0187", SYMLINK+="ttyLOYALTY", OPTIONS+="link_priority=99", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="065a", ATTRS{idProduct}=="a002", SYMLINK+="ttyBAGSEAL", OPTIONS+="link_priority=100", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="05f9", ATTRS{idProduct}=="4204", ATTRS{product}=="QuickScan QD2500", SYMLINK+="ttyBAGSEAL", OPTIONS+="link_priority=99", GROUP="dialout", MODE="0660"

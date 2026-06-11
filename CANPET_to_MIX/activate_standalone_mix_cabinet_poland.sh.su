@@ -1,0 +1,252 @@
+#!/bin/bash
+
+#Change from can pet bins to mix bin on X2/X20/X200/X3/X30
+#Author: Vilde Olsen
+#Date: 11.03.2026
+
+BASE_USER="repant"
+if [[ "${R_BASE_USER}" ]]; then
+  BASE_USER="${R_BASE_USER}"
+fi
+
+BASE_DIR="/home/repant"
+if [[ "${R_BASE_DIR}" ]]; then
+  BASE_DIR="${R_BASE_DIR}"
+fi
+
+APP_DIR="$BASE_DIR/COSMOS"
+if [[ "${R_APP_DIR}" ]]; then
+  APP_DIR="${R_APP_DIR}"
+fi
+
+exit_script() {
+  echo "$2"
+  echo "$2" > $APP_DIR/outbox/feedback.txt
+  chown $BASE_USER:$BASE_USER $APP_DIR/outbox/feedback.txt
+  chmod 666 $APP_DIR/outbox/feedback.txt
+  exit $1
+}
+
+exit_and_stop_service() {
+  echo "$2"
+  echo "$2" > $APP_DIR/outbox/feedback.txt
+  chown $BASE_USER:$BASE_USER $APP_DIR/outbox/feedback.txt
+  chmod 666 $APP_DIR/outbox/feedback.txt
+  sudo -u $BASE_USER -i $APP_DIR/script/service_stop
+  exit $1
+}
+
+vercomp () {
+    if [[ $1 == $2 ]]
+    then
+        return 0
+    fi
+    local IFS=.
+    local i ver1=($1) ver2=($2)
+    # fill empty fields in ver1 with zeros
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++))
+    do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver1[@]}; i++))
+    do
+        if [[ -z ${ver2[i]} ]]
+        then
+            # fill empty fields in ver2 with zeros
+            ver2[i]=0
+        fi
+        if ((10#${ver1[i]} > 10#${ver2[i]}))
+        then
+            return 1
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]}))
+        then
+            return 2
+        fi
+    done
+    return 0
+}
+
+#don't change the bin config if its a RVM X Proline or RVM X Mega
+BEVESORT=$(grep 'Bevesort=true' $APP_DIR/CFG/developer_config.ini -c)
+if [ "$BEVESORT" == "1" ]; then
+  exit_script 0 "This is a Proline machine so will not change the bin configuration"
+fi
+
+#don't change the bin config if its an RVM eXtend
+BIN_201=$(psql -d cosmos_DB -U cosmos_user -c 'select bin from "t_binConfig" where bin=201;' -t)
+if [ "$BIN_201" != "" ]; then
+  exit_script 0 "This is a RVM eXtend machine so will not change the bin configuration"
+fi
+
+#don't change the bin configuration it there is only one bin
+BIN_COUNT=$(psql -d cosmos_DB -U cosmos_user -c 'select count(*) from "t_binConfig";' -t)
+if [ "$BIN_COUNT" -lt 2 ]; then
+  exit_script 0 "This RVM only has one bin. Will not change the bin configuration."
+fi
+
+VALID_BINS_COUNT=$(psql -d cosmos_DB -U cosmos_user -c "select count(*) from \"t_binConfig\" where (description='pet' and bin=1) or (description='can' and bin=2);" -t)
+if [ "$VALID_BINS_COUNT" -lt 2 ]; then
+  exit_script 0 "The RVM doesn't have can AND pet bin. Will not change the bin configuration."
+fi
+
+#Check that all the bins have been emptied
+SENT_TO_BIN_FROM="1"
+SENT_TO_BIN_TO="2"
+GLASS_BIN=$(psql -d cosmos_DB -U cosmos_user -c 'select count(*) from "t_binConfig" where bin=3;' -t)
+if [ "$GLASS_BIN" -gt 0 ]; then
+  SENT_TO_BIN_TO="3"
+fi
+COUNT_NOT_EMPTY=$(psql -d cosmos_DB -U cosmos_user -c "select count(*) from \"t_bottleList\" where saved=0 and fraud = 0 and \"sentToBinNo\" between $SENT_TO_BIN_FROM and $SENT_TO_BIN_TO;" -t)
+if [ "$COUNT_NOT_EMPTY" -gt 0 ]; then
+  exit_script 2 "The bins have not been emptied. Cannot change the bin configuration."
+fi
+
+#Check that packages are up to date
+#cosmos-8.15.2-24951.hotfix.el7.centos.x86_64.rpm
+CURRENT_VERSION=`rpm -q cosmos | sed 's/cosmos-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "8.15.2"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Upgrade the RVM before changing the bin configuration."
+fi
+
+
+echo "Its a RVM X2/20/200 or a RVM X3/X30. Will change the bin configuration to one mix bin."
+echo "Setting machine in service"
+while true; do
+  last_bottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_bottleList";' -t)
+  last_bottle_receipt_id="${last_bottle_receipt_id#"${last_bottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_bottle_receipt_id="${last_bottle_receipt_id%"${last_bottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace characters
+
+  last_crate_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_crateList";' -t)
+  last_crate_receipt_id="${last_crate_receipt_id#"${last_crate_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_crate_receipt_id="${last_crate_receipt_id%"${last_crate_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  last_cratebottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_cratebottleList";' -t)
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id#"${last_cratebottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id%"${last_cratebottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  next_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select "receiptNo" from "t_receiptManagement";' -t)
+  next_receipt_id="${next_receipt_id#"${next_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  next_receipt_id="${next_receipt_id%"${next_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  if [ "$last_bottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_crate_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_cratebottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  else
+	MACHINE_IN_USE=false
+  fi
+
+  if $MACHINE_IN_USE ; then
+      echo "The machine is in use, wait"
+      sleep 5
+  else
+    echo "Set machine in service mode"
+    sudo -u $BASE_USER -i $APP_DIR/script/service_start -f
+    break
+  fi
+done
+
+
+##### UPDATE RPMs
+yum clean all --enablerepo=RVM-Testing,Repant-Testing
+yum upgrade -y cosmos-8.15.3-25077.1588_standalone_mix_cabinets.el7.centos bottlelinectrl-1.9.7-25077.1588_standalone_mix_cabinets.el7.centos recognition-2.8.17-25077.1588_standalone_mix_cabinets.el7.centos noclearing-1.3.10-25077.1588_standalone_mix_cabinets.el7.centos rvm-database-migrations-1.2.2-23919.el7.noarch --enablerepo=RVM-Testing,Repant-Testing
+
+#Check that the packages have been upgraded
+CURRENT_VERSION=`rpm -q cosmos | sed 's/cosmos-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "8.15.3"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Failed to change bin configuration. cosmos version must be >= 8.15.3"
+fi
+
+CURRENT_VERSION=`rpm -q bottlelinectrl | sed 's/bottlelinectrl-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "1.9.7"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Failed to change bin configuration. bottlelinectrl version must be >= 1.9.7"
+fi
+
+CURRENT_VERSION=`rpm -q recognition | sed 's/recognition-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "2.8.17"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Failed to change bin configuration. recognition version must be >= 2.8.17"
+fi
+
+CURRENT_VERSION=`rpm -q noclearing | sed 's/noclearing-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "1.3.10"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Failed to change bin configuration. noclearing version must be >= 1.3.10"
+fi
+
+CURRENT_VERSION=`rpm -q rvm-database-migrations | sed 's/rvm-database-migrations-//' | cut -d "-" -f1`
+vercomp "$CURRENT_VERSION" "1.2.2"
+if [ "$?" == "2"  ] ; then
+  exit_script 2 "Failed to change bin configuration. rvm-database-migrations version must be >= 1.2.2"
+fi
+
+###### UPDATE BIN CONFIG
+
+#Combine max count
+MAX_COUNT_PET=$(psql -d cosmos_DB -U cosmos_user -c 'select "maxCount" from "t_binConfig" where bin=1;' -t)
+MAX_COUNT_CAN=$(psql -d cosmos_DB -U cosmos_user -c 'select "maxCount" from "t_binConfig" where bin=2;' -t)
+if [ "$MAX_COUNT_PET" -eq -1 ]; then
+  COMBINED_MAX_COUNT="$MAX_COUNT_CAN"
+elif [ "$MAX_COUNT_CAN" -eq -1 ]; then
+  COMBINED_MAX_COUNT="$MAX_COUNT_PET"
+else
+  COMBINED_MAX_COUNT=$((MAX_COUNT_PET + MAX_COUNT_CAN))
+fi
+
+#Get bag no
+BAG_NO_PET=$(psql -d cosmos_DB -U cosmos_user -c 'select "currentBagNo" from "t_binConfig" where bin=1;' -t)
+BAG_NO_CAN=$(psql -d cosmos_DB -U cosmos_user -c 'select "currentBagNo" from "t_binConfig" where bin=2;' -t)
+if [ "$BAG_NO_PET" -gt "$BAG_NO_CAN" ]; then
+  CURRENT_BAG_NO="$BAG_NO_PET"
+else
+  CURRENT_BAG_NO="$BAG_NO_CAN"
+fi
+
+#Get last empty date
+LAST_EMPTY_PET=$(psql -d cosmos_DB -U cosmos_user -c 'select "lastEmptied" from "t_binConfig" where bin=1;' -t)
+LAST_EMPTY_CAN=$(psql -d cosmos_DB -U cosmos_user -c 'select "lastEmptied" from "t_binConfig" where bin=2;' -t)
+if [[ "$LAST_EMPTY_PET" > "$LAST_EMPTY_CAN" ]]; then
+  CURRENT_LAST_EMPTY="$LAST_EMPTY_PET"
+else
+  CURRENT_LAST_EMPTY="$LAST_EMPTY_CAN"
+fi
+
+#Changing first bin to mix in t_binConfig
+psql -d cosmos_DB -U cosmos_user -c "update \"t_binConfig\" set description='mix', \"maxCount\"=$COMBINED_MAX_COUNT, \"currentBagNo\"=$CURRENT_BAG_NO, \"lastEmptied\"='$CURRENT_LAST_EMPTY' where bin=1;"
+
+#Removing second bin
+psql -d cosmos_DB -U cosmos_user -c 'delete from "t_binConfig" where bin=2;'
+
+#add sorter profile for left sorting
+psql -d cosmos_DB -U cosmos_user -c 'update t_bin set "sorterProfile"=1 where bin=1;'
+
+#add sorter profile for right sorting
+psql -d cosmos_DB -U cosmos_user -c 'update t_bin set "sorterProfile"=2 where bin=2;'
+
+#add sorter profile for side cabinet sorting
+psql -d cosmos_DB -U cosmos_user -c 'update t_bin set "sorterProfile"=3 where bin=3;'
+
+#update all bins for mix
+psql -d cosmos_DB -U cosmos_user -c 'update t_bin set bin = 1 where bin=2;'
+
+#update all bins for side cabinet
+psql -d cosmos_DB -U cosmos_user -c 'update "t_binConfig" set bin=2 where bin=3;'
+psql -d cosmos_DB -U cosmos_user -c 'update t_bin set bin = 2 where bin=3;'
+
+#Export SQL
+sudo -u $BASE_USER -i $APP_DIR/TOOLS/RpContainerDB export
+
+##### UPDATE EMPTY BIN SETTINGS
+php $APP_DIR/script/updini.php $APP_DIR/CFG/clearing_config.ini EmptyReportTypes can false
+php $APP_DIR/script/updini.php $APP_DIR/CFG/clearing_config.ini EmptyReportTypes pet false
+php $APP_DIR/script/updini.php $APP_DIR/CFG/clearing_config.ini EmptyReportTypes mix true
+chmod 644 $APP_DIR/CFG/clearing_config.ini
+chown $BASE_USER:$BASE_USER $APP_DIR/CFG/clearing_config.ini
+
+exit_and_stop_service 0 "Successfully changed to mix bin on standalone."

@@ -1,0 +1,42 @@
+<?xml version='1.0'?>
+<Receipt>
+ <Setup>
+  <Element Locale="polish" Translate="CosmosDatabase_Language_schpol" Codepage="16"/>
+ </Setup>
+ <Languages>
+  <Element Country="Danish" Translate="CosmosDatabase_Language_den"/>
+  <Element Country="Greek" Translate="CosmosDatabase_Language_gre"/>
+  <Element Country="Norwegian" Translate="CosmosDatabase_Language_no"/>
+  <Element Country="Swedish" Translate="CosmosDatabase_Language_swe"/>
+  <Element Country="English" Translate="CosmosDatabase_Language_en"/>
+  <Element Country="German" Translate="CosmosDatabase_Language_ge"/>
+  <Element Country="Danish" Translate="PrinterProc_den"/>
+  <Element Country="Greek" Translate="PrinterProc_gre"/>
+  <Element Country="Norwegian" Translate="PrinterProc_no"/>
+  <Element Country="Swedish" Translate="PrinterProc_swe"/>
+  <Element Country="English" Translate="PrinterProc_en"/>
+  <Element Country="German" Translate="PrinterProc_ge"/>
+  <Element Country="Finnish" Translate="PrinterProc_fin"/>
+ </Languages>
+ <Element Align="1" DoubleSize="1" Text="Raport wymiany" Bold="1" Type="txt" Invert="0"/>
+ <Element DoubleSize="0" Text=" " Type="txt"/>
+ <Element Translate="1" DoubleSize="0" Bold="0" Type="date"/>
+ <Element Type="RVMSerialNumber"/>
+ <Element Text="____________________________________" Type="txt"/>
+ <Element DoubleSize="0" Text=" " Type="txt"/>
+ <Element Align="1" Text="Sklep, " Bold="1" Type="txt" DoubleSize="0" Newline="1"/>
+ <Element Align="1" Bold="1" Type="RVMStoreAddress" DoubleSize="0"/>
+ <Element Align="1" Text=" " Bold="1" Type="header1" DoubleSize="0"/>
+ <Element Text="____________________________________" Type="txt"/>
+ <Element DoubleSize="0" Text=" " Type="txt"/>
+ <Element Text="Materiał: Can" Type="txt" condition="can"/>
+ <Element Text="Materiał: PET" Type="txt" condition="pet"/>
+ <Element Text="Waga pojemnika: " Type="txt" Newline="0"/>
+ <Element Type="emptyreceipt_weight"/>
+ <Element Text="Ilość opakowań: " Type="txt" Newline="0"/>
+ <Element Type="emptyreceipt_count"/>
+ <Element Text="Total: " Type="txt" Newline="0"/>
+ <Element Type="emptyreceipt_value"/>
+ <Element>
+ </Element>
+</Receipt>

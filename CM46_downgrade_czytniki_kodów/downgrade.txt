@@ -1,0 +1,3 @@
+# Configuration file
+m REV_RL1.    # Enable FW downgrade
+# end of file

@@ -1,0 +1,412 @@
+#!/bin/bash
+
+if [ "$(id -u)" != "0" ]; then
+	echo "This script needs to be run as root"
+	exit 3
+fi
+
+decho() {
+	command echo $(date '+%T.%3N [configure_printer]') "$@"
+}
+
+printer_replaced() {
+	local current_printer=$1
+	local serial=$2
+	local concat="$current_printer":"$serial"
+	if [ -f "$printer_changed_file" ]; then
+		filec=$(head -1 "$printer_changed_file")
+
+		if [[ "$filec" == "$concat" ]]; then
+			echo "0"
+		else
+			local rest=$(tail -n +2 "$printer_changed_file")
+			if [[ -n "$rest" ]]; then
+				printf '%s\n%s\n' "$concat" "$rest" > "$printer_changed_file"
+			else
+				echo "$concat" > "$printer_changed_file"
+			fi
+			echo "1"
+		fi
+	else
+		echo "$concat" > "$printer_changed_file"
+		echo "1"
+	fi
+}
+
+set_memory_switches() {
+	local path=$1
+	local name=$2
+
+	if [[ "$name" == "W2K203" ]]; then
+		echo -e "\x1d\x4d\x01\x68\x08" > "$path"
+		sleep 5
+		if [[ $(check_memory_switches "$path") == "1" ]]; then
+			echo "1"
+		else
+			echo "0"
+		fi
+	else
+		echo "2"
+	fi
+}
+
+check_memory_switches() {
+	local path=$1
+	local tmp=$(mktemp)
+
+	printf '\x1B\x73\x05' > "$path"
+	sleep 0.2
+	head -c 6 "$path" > "$tmp"
+
+	local bytes=($(od -A n -t x1 "$tmp"))
+	rm -f "$tmp"
+
+	if [[ "${bytes[3]}" == "68" ]]; then
+		echo "1"
+	else
+		echo "0"
+	fi
+}
+
+set_nippon_serial() {
+	local lp=$1
+	local timestamp=$2
+
+	local timestamp_trunc=${timestamp%??}
+	local timestamp_hex=$(echo -n "$timestamp_trunc" | od -A n -t x1)
+	local serial=$(echo "${timestamp_hex// /\\x}")
+	
+	local opcode="\x1d\x55"
+	local full_command="${opcode}${serial}"
+	echo -e "$full_command" > "$lp"
+}
+
+set_and_check_nippon_serial() {
+	local lp=$1
+	local timestamp=$(date +%s)
+	set_nippon_serial "$lp" "$timestamp"
+	
+	local rp=$(/bin/su -c "reset_printer" - repant)
+
+	sleep 5
+	
+	local pd=$(detect_line_printers_by_id)
+
+	IFS=' ' read -r -a printers <<< "$pd"
+	for i in "${printers[@]}"; do
+		IFS=':' read -r -a atr <<<"$i"
+		local path=${atr[1]}
+		local serial=${atr[2]}
+		
+		if [[ "$path" == "$lp" ]]; then
+			local timestamp_trunc=${timestamp%??}
+			if [[ "$timestamp_trunc" == "$serial" ]]; then
+				echo "1"
+				return
+			fi
+		fi
+	done
+	echo "0"
+}
+
+detect_line_printers_by_id() {
+	local lps=$(ls /dev/usb/lp*)
+
+	if [ $? != 0 ]; then
+		echo ""
+	else
+
+		local detected_printers=()
+		for lp in $lps; do # Itererer LPene   
+
+			declare -a sections
+			output=$(udevadm info --attribute-walk --name "$lp")
+			
+			local section_found=false
+			local section=""
+			local line=""
+			while IFS= read -r line; do
+			    if [[ "$line" =~ ^[[:space:]]*looking ]] && [[ "$section_found" == "false" ]]; then
+			        section_found=true
+			        section+="$line\n"
+			    elif [[ $section_found == "true" ]]; then
+			        if [[ "$line" =~ ^$ ]]; then
+			            section_found=false
+			            sections+=("$section")
+			            section=""
+			        else
+			            section+="$line\n"
+			        fi
+			    else
+			        continue
+			    fi
+			done <<< "$output"
+
+
+			for x in "${!sections[@]}"; do # Itererer igjennom udevadm bolkene
+
+				for i in ${!SUPPORTED_PRINTERS[@]}; do # Itererer igjennom støttede printere
+					foundProdID=0
+					foundVendorID=0
+
+					name_idx=$((IDX_IEEE1284 * AWK_MULTIPLIER))
+					awk_cmd="awk -F'[{}]' '{print \$$name_idx}' <<< \${SUPPORTED_PRINTERS[$i]}"
+					printer_name=$(eval " $awk_cmd")
+
+					vendor_idx=$((IDX_VENDORID * AWK_MULTIPLIER))
+					awk_cmd="awk -F'[{}]' '{print \$$vendor_idx}' <<< \${SUPPORTED_PRINTERS[$i]}"
+					vendorID=$(eval " $awk_cmd")
+
+					product_idx=$((IDX_PRODUCTID * AWK_MULTIPLIER))
+					awk_cmd="awk -F'[{}]' '{print \$$product_idx}' <<< \${SUPPORTED_PRINTERS[$i]}"
+					productID=$(eval " $awk_cmd")
+
+					vendorid_grep=$(echo "${sections[$x]}" | grep -a -i "$vendorID")
+					if [ $? -eq 0 ]; then
+						foundVendorID=1
+					fi				
+
+					prodid_grep=$(echo "${sections[$x]}" | grep -a -i "$productID")
+					if [ $? -eq 0 ]; then
+						foundProdID=1
+					fi		
+
+					if [ $foundVendorID -eq 1 ] && [ $foundProdID -eq 1 ]; then
+						pserial=$(echo -ne "${sections[$x]}" | grep "ATTRS{serial}==")
+						serial=$(echo "$pserial" | cut -d '"' -f2 | cut -d '"' -f1)
+      					detected_printers+="$i:$lp:$serial "
+					fi	
+
+				done
+			done
+			sections=()
+		done
+		echo "$detected_printers"
+	fi
+}
+
+cups_configure() {
+	decho "Setting up printer ${printer_name[$PRINTER_IDX]} as ${cups_name[$PRINTER_IDX]}!"
+	driver_grep=$(lpinfo -m | grep "${cups_driver[$PRINTER_IDX]}")
+	driver=$(echo $driver_grep | sed -e "s/${cups_driver[$PRINTER_IDX]}//" -e 's/ //')
+
+	if [ "$driver_grep" != "" ]; then
+		decho "PPD/driver is installed!"
+	else
+		decho "PPD/driver is NOT installed!"
+		return 1
+	fi
+
+	device_grep=$(lpinfo -v | grep "${printer_name[$PRINTER_IDX]}")
+	uri=$(echo "$device_grep" | sed 's/direct //')
+	if [ "$device_grep" != "" ]; then
+		decho "CUPS is aware of the printer."
+	else
+		decho "The printer as a device is not available to CUPS!"
+		return 1
+	fi
+
+	decho "Deleting all installed printers"
+	lpstat -v  > /dev/null 2>&1
+	if [ $? == 0 ]; then
+		IFS=$'\n' read -r -d '' -a arr < <( lpstat -v && printf '\0' )
+
+		for lines in "${arr[@]}"; do
+			temp=$(echo "${lines%: *}")
+			printer=$(echo "${temp:11}")
+
+			in=$(lpadmin -x "$printer")
+			if [ $? -eq 0 ]; then
+				decho "$printer deleted!"
+			else
+				decho "Failed to delete $printer!"
+				return 1
+			fi
+		done
+	fi
+
+	decho "Installing ${cups_name[$PRINTER_IDX]}..."
+	in=$(lpadmin -p ${cups_name[$PRINTER_IDX]} -E -v "$uri" -m "$driver" -L "RVM Machine" -D ${cups_name[$PRINTER_IDX]} 2>/dev/null)
+
+	if [[ "${printer_name[$PRINTER_IDX]}" == "BA-T500II" ]]; then
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o PageSize=RP60x297
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o Resolution=203x203dpi
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o TmxFeedPitch=203.2
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o TmxMaxBandWidth=640
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o TmxSpeedControl=-1,-1,-1,-1
+	else
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o PageSize=X54MMY180MM
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o CutterMode=5FullFull
+		lpadmin -p ${cups_name[$PRINTER_IDX]} -o FeedMode=3mmFeed
+	fi
+
+	decho "...Done!"
+
+	lp=$(lpstat -d | grep "system default destination: ${cups_name[$PRINTER_IDX]}")
+	if [ $? -ne 0 ]; then
+		lpadmin -d ${cups_name[$PRINTER_IDX]}
+	fi
+
+	decho "${cups_name[$PRINTER_IDX]} is the default printer!"
+}
+
+BASE_USER="repant"
+if [[ "${R_BASE_USER}" ]]; then
+	BASE_USER="${R_BASE_USER}"
+fi
+
+BASE_DIR="/home/repant"
+if [[ "${R_BASE_DIR}" ]]; then
+  BASE_DIR="${R_BASE_DIR}"
+fi
+
+APP_DIR="$BASE_DIR/COSMOS"
+if [[ "${R_APP_DIR}" ]]; then
+  APP_DIR="${R_APP_DIR}"
+fi
+
+CFG_DIR="$APP_DIR/CFG/"
+
+IDX_IEEE1284=1
+IDX_VENDORID=2
+IDX_PRODUCTID=3
+IDX_CUPSNAME=4
+IDX_DRIVERNAME=5
+AWK_MULTIPLIER=2
+
+SUPPORTED_PRINTERS=(
+	"{W2K203} {1051} {1000} {NII-W2K203DPI-USB} {NIPPON PRIMEX Npi-2inch-Receipt}" 
+	"{BA-T500II} {04b8} {0e05} {EPSON-BA-T500II} {EPSON TM BA Thermal (rastertotmt)}"
+)
+
+PRINTER_PATH=$(cat "$CFG_DIR/developer_config.ini" | grep "^PrinterPath=" | sed 's/PrinterPath=//')
+CUPS_BYPASSED=$(cat "$CFG_DIR/developer_config.ini" | grep "^BypassCUPS=" | sed 's/BypassCUPS=//')
+PRINTER_IDX=0
+FUJITSU=$(cat "$CFG_DIR/developer_config.ini" | grep "^Fujitsu=" | sed 's/Fujitsu=//')
+USB=$(cat "$CFG_DIR/developer_config.ini" | grep "^USB=" | sed 's/USB=//')
+CUPS_TIMEOUT=120
+printer_changed_file="$CFG_DIR/installed_printer.cps"
+
+if [ "$PRINTER_PATH" == "disabled" ]; then
+	decho 'Printer is disabled'
+	exit 2
+fi
+
+if [ "$USB" == "true" ]; then
+	decho 'Printer is usb printer.'
+	exit 2
+fi
+
+if [ "$FUJITSU" == "true" ]; then
+	decho 'Printer is fujitsu printer.'
+	exit 2
+fi
+
+LINE_PRINTER_SPECIFIED=$(echo $PRINTER_PATH | grep "/dev/usb/lp")
+if [ "$LINE_PRINTER_SPECIFIED" != "" ]; then
+
+	# DO WE CARE ABOUT WHAT THEY CHOOSE OR WHAT?
+	decho "developer_config specifies a line printer path: $PRINTER_PATH"
+	
+	decho "Attempting to detect line printer by IDs..."	
+	pd=$(detect_line_printers_by_id)
+	IFS=' ' read -r -a printers <<< "$pd"
+		
+	declare -a printer_name=()
+	declare -a paths
+	declare -a cups_name=()
+	declare -a cups_driver=()
+	declare -a serial=()
+	
+	for i in "${!printers[@]}"; do
+		IFS=':' read -r -a atrx <<<"${printers[$i]}"
+	
+		name_idx=$((IDX_IEEE1284 * AWK_MULTIPLIER))
+		awk_cmd="awk -F'[{}]' '{print \$$name_idx}' <<< \${SUPPORTED_PRINTERS[${atrx[0]}]}"
+		printer_name+=("$(eval " $awk_cmd")")
+	
+		cups_name_idx=$((IDX_CUPSNAME * AWK_MULTIPLIER))
+		awk_cmd="awk -F'[{}]' '{print \$$cups_name_idx}' <<< \${SUPPORTED_PRINTERS[${atrx[0]}]}"
+		cups_name+=("$(eval " $awk_cmd")")
+	
+		cups_driver_idx=$((IDX_DRIVERNAME * AWK_MULTIPLIER))
+		awk_cmd="awk -F'[{}]' '{print \$$cups_driver_idx}' <<< \${SUPPORTED_PRINTERS[${atrx[0]}]}"
+		cups_driver+=("$(eval " $awk_cmd")")
+		
+		paths+=("${atrx[1]}")
+		
+		if [[ "${atrx[1]}" == "$PRINTER_PATH" ]]; then
+			PRINTER_IDX=$i
+		fi
+	
+		if [[ "${atrx[2]}" == "" ]]; then
+			serial+=("UNKNOWN")
+		else
+			serial+=("${atrx[2]}")
+		fi
+	
+		decho "Detected ${printer_name[$i]} at ${paths[$i]}, using ${cups_driver[$i]}, serial ${serial[$i]}"
+	done
+
+	if [ ${#printers[@]} -gt 1 ]; then
+		decho "There is MORE THAN ONE printer connected to the RVM!"
+	fi
+
+	if [ ${#printers[@]} -lt 1 ]; then
+		decho "No line printer detected!"
+		exit 1
+	fi
+	
+	decho "Using ${printer_name[$PRINTER_IDX]}!"
+
+	if [[ ${serial[$PRINTER_IDX]} == "UNKNOWN" && ${printer_name[$PRINTER_IDX]} == "W2K203" ]]; then
+		decho "The printer has no serial set. Setting it now..."
+		sacns=$(set_and_check_nippon_serial "${paths[$PRINTER_IDX]}")
+		if [[ $sacns == "1" ]]; then
+			decho "Succesfully set serial number!"
+		else
+			decho "Failed to set serial number, aborting!"
+			exit 1
+		fi
+	fi
+	
+	# Legg til et felt i den fila som sier noe om du har confet eller ikke.
+	replaced=$(printer_replaced "${printer_name[$PRINTER_IDX]}" "${serial[$PRINTER_IDX]}")
+	ms_set_grep=$(cat "$printer_changed_file" | grep "MS set")
+	
+	if [[ "$replaced" == "1" ]] || [[ "$ms_set_grep" == "" ]]; then
+		sms=$(set_memory_switches "${paths[$PRINTER_IDX]}" "${printer_name[$PRINTER_IDX]}")
+		if [[ $sms == "1" ]]; then
+		decho "Set memory switch MS2-4, MS2-6 and MS2-7!"
+			echo "MS set" >> "$printer_changed_file"
+		elif [[ $sms == "0" ]]; then
+			decho "Failed to apply the memory switches, aborting!"
+			exit 1
+		fi
+	fi
+
+	if [[ $CUPS_BYPASSED == "false" ]]; then
+		cups_configure &
+		cups_pid=$!
+
+		( sleep $CUPS_TIMEOUT && kill $cups_pid 2>/dev/null && decho "CUPS configuration timed out after ${CUPS_TIMEOUT}s!" ) &
+		watchdog_pid=$!
+
+		wait $cups_pid
+		cups_result=$?
+
+		kill $watchdog_pid 2>/dev/null
+		wait $watchdog_pid 2>/dev/null
+
+		if [ $cups_result -ne 0 ]; then
+			decho "CUPS configuration failed or timed out!"
+			exit 1
+		fi
+	else
+		decho "CUPS is being bypassed, omitting CUPS configuration."
+	fi
+fi
+
+script_name=$(basename "$0")
+decho "$script_name finished!"
+exit 0

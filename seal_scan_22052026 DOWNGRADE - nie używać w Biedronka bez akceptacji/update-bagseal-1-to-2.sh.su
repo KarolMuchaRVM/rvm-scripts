@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Update bag seal changes. Includes:
-#   Require 1 bag seal code per bag seal
+#   Require 1 to 2 bag seal code per bag seal
 #   Bag seal code must be unique to the RVM
 #   More specific error message on screen if bag seal is not created
-# Date: 10.04.2026
+# Date: 24.04.2026
 # Author: Vilde Olsen
-
+# Updated by: Karl-Andres Lausmaa 22.05.2026 - Added condition for downgrading Cosmos if the current version is newer than the target version.
 
 BASE_USER="repant"
 if [[ "${R_BASE_USER}" ]]; then
@@ -121,37 +121,48 @@ while true; do
   fi
 done
 
-#check if bevesort is enabled
-BEVESORT=`cat $APP_DIR/CFG/developer_config.ini | grep Bevesort=true -c`
-
 #update packages from testing
 yum clean all --enablerepo=RVM-Testing,Repant-Testing
-yum -y install cosmos-8.15.3-26723.poland_spring_release.el7.centos empty-report-1.5.5-26723.poland_spring_release.el7.centos reMotion-2.13.12-26740.el7.noarch ReVend-5.6.7-27072.el7 --enablerepo=RVM-Testing,Repant-Testing
+
+# Decide install vs downgrade for cosmos based on current major.minor.patch
+COSMOS_CURRENT_VERSION=`rpm -q cosmos | sed 's/cosmos-//' | cut -d "-" -f1`
+vercomp "$COSMOS_CURRENT_VERSION" "8.15.3"
+if [ "$?" == "1" ] ; then
+  # Current cosmos is newer than 8.15.3 (e.g. 8.15.5-28178.hotfix) — downgrade
+  yum -y downgrade cosmos-8.15.3-27333.poland_spring_release.el7.centos --enablerepo=RVM-Testing,Repant-Testing
+else
+  # Current cosmos is 8.15.3.x or lower — install handles both upgrade and no-op
+  yum -y install cosmos-8.15.3-27333.poland_spring_release.el7.centos --enablerepo=RVM-Testing,Repant-Testing
+fi
+
+yum -y install empty-report-1.5.5-27333.poland_spring_release.el7.centos reMotion-2.13.12-27312.el7.noarch ReVend-5.6.7-27282.el7 --enablerepo=RVM-Testing,Repant-Testing
 
 #check that packages have been updated
 MODULE_VERSION=$(rpm -q cosmos | sed 's/cosmos-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
-if [ "$MODULE_VERSION" != "8.15.3-26723" ]; then
+if [ "$MODULE_VERSION" != "8.15.3-27333" ]; then
   exit_and_stop_service 2 "Failed to update Poland Bag Seal. cosmos version is wrong"
 fi
 
 MODULE_VERSION=$(rpm -q empty-report | sed 's/empty-report-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
-if [ "$MODULE_VERSION" != "1.5.5-26723" ]; then
+if [ "$MODULE_VERSION" != "1.5.5-27333" ]; then
   exit_and_stop_service 2 "Failed to update Poland Bag Seal. empty-report version is wrong"
 fi
 
 MODULE_VERSION=$(rpm -q reMotion | sed 's/reMotion-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//')
-if [ "$MODULE_VERSION" != "2.13.12-26740" ]; then
+if [ "$MODULE_VERSION" != "2.13.12-27312" ]; then
   exit_and_stop_service 2 "Failed to update Poland Bag Seal. reMotion version is wrong"
 fi
 
-MODULE_VERSION=$(rpm -q empty-report | sed 's/empty-report-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//' | sed 's/.poland_spring_release//' | sed 's/.centos//')
-if [ "$MODULE_VERSION" != "1.5.5-26723" ]; then
-  exit_and_stop_service 2 "Failed to update Poland Bag Seal. empty-report version is wrong"
+MODULE_VERSION=$(rpm -q ReVend | sed 's/ReVend-//' | sed 's/.el7//' | sed 's/.noarch//' | sed 's/.x86_64//')
+if [ "$MODULE_VERSION" != "5.6.7-27282" ]; then
+  exit_and_stop_service 2 "Failed to update Poland Bag Seal. ReVend version is wrong"
 fi
 
+
 #Set expecting 1 bag seal code per bag seal
-php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader ExpectedBagSealCodeCount 1
-php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader BagSealCodeSeparator ,
+php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader MinBagSealCodeCount 1
+php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader MaxBagSealCodeCount 2
+php $APP_DIR/script/updini.php $APP_DIR/CFG/developer_config.ini BagSealCardReader BagSealCodeSeparator '","'
 chown $BASE_USER:$BASE_USER $APP_DIR/CFG/developer_config.ini
 
-exit_and_stop_service 0 "Successfully updated Poland Bag Seal. Expecting 1 bag seal code per bag seal."
+exit_and_stop_service 0 "Successfully updated Poland Bag Seal. Expecting 1 to 2 bag seal code per bag seal."

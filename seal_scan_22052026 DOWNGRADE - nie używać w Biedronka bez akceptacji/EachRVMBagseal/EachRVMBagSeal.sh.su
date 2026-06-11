@@ -1,0 +1,487 @@
+#!/bin/bash
+#
+#
+# Dawid Palarczyk 15.02.2026
+#
+#### Poland Bag Seal Scanner Configuration - UNIVERSAL (Standalone & Proline)
+set -o pipefail
+BASE_USER="repant"
+if [[ "${R_BASE_USER}" ]]; then
+  BASE_USER="${R_BASE_USER}"
+fi
+BASE_DIR="/home/repant"
+if [[ "${R_BASE_DIR}" ]]; then
+  BASE_DIR="${R_BASE_DIR}"
+fi
+APP_DIR="$BASE_DIR/COSMOS"
+if [[ "${R_APP_DIR}" ]]; then
+  APP_DIR="${R_APP_DIR}"
+fi
+### Check which configuration to use
+bevesort=$(grep "^Bevesort=" /home/repant/COSMOS/CFG/developer_config.ini | head -n1)
+echo "Checking machine type: $bevesort"
+
+if [[ "$bevesort" == "Bevesort=true" ]]; then
+	echo "Machine type: PROLINE BACKROOM"
+	MACHINE_TYPE="proline"
+elif [[ "$bevesort" == "Bevesort=false" ]]; then
+	echo "Machine type: STANDALONE"
+	MACHINE_TYPE="standalone"
+else
+	echo "ERROR: Cannot determine machine type from Bevesort setting"
+	echo "Found: $bevesort"
+	exit 1
+fi
+echo "Script started for $MACHINE_TYPE"
+### Check and set package versions
+cosmos=$(rpm -q cosmos)
+reMotion=$(rpm -q reMotion)
+reVend=$(rpm -q ReVend)
+feedback=""
+correctcounter=0
+if [ "$cosmos" != "cosmos-8.15.1-21277.hotfix.el7.centos.x86_64" ]; then
+	yum upgrade -y cosmos
+	sleep 3
+	cosmos=$(rpm -q cosmos)
+	echo "cosmos upgraded: $cosmos"
+else
+	echo "cosmos correct: $cosmos"
+fi
+if [ "$reMotion" != "reMotion-2.13.10-20714.el7.noarch" ]; then
+	yum upgrade -y reMotion
+	sleep 3
+	reMotion=$(rpm -q reMotion)
+	echo "reMotion updated: $reMotion"
+else
+	echo "reMotion correct: $reMotion"
+fi
+cosmos=$(rpm -q cosmos)
+reMotion=$(rpm -q reMotion)
+
+if [ "$reMotion" == "reMotion-2.13.10-20714.el7.noarch" ] && [ "$cosmos" == "cosmos-8.15.1-21277.hotfix.el7.centos.x86_64" ]; then
+	echo "cosmos and reMotion packages ok"
+	echo "+1"
+	((correctcounter+=1))
+else
+	echo "cosmos or reMotion issues present"
+fi
+emptyreport=$(rpm -q empty-report)
+htmlpack=$(rpm -q html-empty-bin-report)
+
+if [[ "$emptyreport" =~ ^empty-report-1\.[0-4] ]] || [[ "$emptyreport" =~ ^empty-report-0\. ]]; then
+	yum upgrade -y empty-report
+	sleep 3
+	emptyreport=$(rpm -q empty-report)
+	echo "emptyreport upgraded: $emptyreport"
+else
+	echo "emptyreport correct: $emptyreport"
+fi
+
+if [ "$htmlpack" == "package html-empty-bin-report is not installed" ]; then
+	echo "package html-empty-bin-report is not installed NOT INSTALLED!!!"
+	htmlpack=$(rpm -q html-noempty)
+	if [[ "$htmlpack" == html-noempty* ]]; then
+		echo "erasing html-noempty"
+		rpm -e --nodeps html-noempty
+		echo "installing html-empty-bin-report"
+		yum install -y html-empty-bin-report
+		sleep 3
+		htmlpack=$(rpm -q html-empty-bin-report)
+		echo "htmlpack upgraded: $htmlpack"
+	else
+		echo "CHECK HTML PACKAGE!"
+		echo "CHECK HTML PACKAGE!" > /home/repant/emptyreport/outbox/feedback.txt
+		exit 1
+	fi
+else
+	echo "htmlpack correct: $htmlpack"
+fi
+if [ "$htmlpack" != "package html-empty-bin-report is not installed" ] && [[ "$emptyreport" =~ empty-report-1\.([5-9]|[1-9][0-9]) ]]; then
+	echo "emptyreport and htmlpack packages ok"
+	echo "+1"
+	((correctcounter+=1))
+else
+	echo "emptyreport or htmlpack issues present"
+fi
+
+### ReVend version check
+# Required exact version: ReVend-5.6.5-20593.x86_64
+REVEND_EXACT="ReVend-5.6.5-20593.x86_64"
+reVend=$(rpm -q ReVend)
+echo " "
+echo "ReVend: $reVend"
+
+if [ "$reVend" == "$REVEND_EXACT" ]; then
+	echo "ReVend correct: $reVend"
+else
+	echo "ReVend version incorrect: $reVend - installing exact version"
+	yum downgrade -y ReVend-5.6.5-20593.x86_64 || yum install -y ReVend-5.6.5-20593.x86_64
+	sleep 3
+	reVend=$(rpm -q ReVend)
+	echo "ReVend after install: $reVend"
+fi
+
+if [ "$reVend" == "$REVEND_EXACT" ]; then
+	echo "ReVend package ok"
+	echo "+1"
+	((correctcounter+=1))
+else
+	echo "ReVend version still incorrect after install: $reVend"
+fi
+
+### SET GENERAL BAGSEAL CONFIG FILES ###
+### BagSeal
+bagseal=`grep RequireBagSeal /home/repant/COSMOS/CFG/developer_config.ini`
+echo " "
+echo "$bagseal"
+if [ "$bagseal" == "RequireBagSeal=true" ]; then
+	echo "Bag seal already required"
+else
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini ClearingSystem RequireBagSeal true
+	echo "Bag seal set to be required"
+	bagseal=`grep RequireBagSeal /home/repant/COSMOS/CFG/developer_config.ini`
+fi
+if [ "$bagseal" == "RequireBagSeal=true" ]; then
+	echo "+1"
+	((correctcounter+=1))
+fi
+### ConfrimBinEmpty
+binempty=`grep ShowConfirmBinEmpty /home/repant/COSMOS/CFG/developer_config.ini`
+echo " "
+echo "$binempty"
+if [ "$binempty" == "ShowConfirmBinEmpty=true" ]; then
+	echo "ShowConfirmBinEmpty already ok"
+else
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Display ShowConfirmBinEmpty true
+	echo "ShowConfirmBinEmpty set to be true"
+	binempty=`grep ShowConfirmBinEmpty /home/repant/COSMOS/CFG/developer_config.ini`
+fi
+if [ "$binempty" == "ShowConfirmBinEmpty=true" ]; then
+	echo "+1"
+	((correctcounter+=1))
+fi
+### Print Emptyreceipt
+emptyreceipt=`grep PrintEmptyReceiptAfterConfirmBinEmpty /home/repant/COSMOS/CFG/developer_config.ini`
+echo " "
+echo "$emptyreceipt"
+if [ "$emptyreceipt" == "PrintEmptyReceiptAfterConfirmBinEmpty=true" ]; then
+	echo "PrintEmptyReceiptAfterConfirmBinEmpty already ok"
+else
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Display PrintEmptyReceiptAfterConfirmBinEmpty true
+	echo "PrintEmptyReceiptAfterConfirmBinEmpty set to be true"
+	emptyreceipt=`grep PrintEmptyReceiptAfterConfirmBinEmpty /home/repant/COSMOS/CFG/developer_config.ini`
+fi
+if [ "$emptyreceipt" == "PrintEmptyReceiptAfterConfirmBinEmpty=true" ]; then
+	echo "+1"
+	((correctcounter+=1))
+fi
+### SET MATERIAL TYPES
+pet=`psql -d cosmos_DB -U cosmos_user -A -q -t -c "select count(*) from \"t_bin\" where \"materialID\"=1;"`
+echo " "
+echo "pet entries $pet"
+if [ "$pet" != 0 ]; then
+
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/clearing_config.ini EmptyReportTypes pet true
+	echo "pet included"
+	feedback+="pet, "
+else
+	echo "pet not in the list"
+fi
+can=`psql -d cosmos_DB -U cosmos_user -A -q -t -c "select count(*) from \"t_bin\" where \"materialID\"=3 or \"materialID\"=4;"`
+echo "can entries $can"
+if [ "$can" != 0 ]; then
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/clearing_config.ini EmptyReportTypes can true
+	echo "can included"
+	feedback+="can, "
+else
+	echo "can not in the list"
+fi
+if [ "$can" != 0 ] && [ "$pet" != 0 ]; then
+
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/clearing_config.ini EmptyReportTypes mix true
+	echo "mix configured"
+	feedback+="mix, "
+else
+	echo "mix not needed"
+fi
+glas=`psql -d cosmos_DB -U cosmos_user -A -q -t -c "select count(*) from \"t_bin\" where \"materialID\"=2;"`
+echo "glass entries $glas"
+if [ "$glas" != 0 ]; then
+	php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/clearing_config.ini EmptyReportTypes glas true
+	echo "glass included"
+	feedback+="glass, "
+else
+	echo "glass not in the list"
+fi
+### Move emptyreceipt file from inbox
+echo " "
+echo "Moving emptyreceipt file to CFG"
+mv /home/repant/COSMOS/inbox/emptyreceipt.xml /home/repant/COSMOS/CFG/emptyreceipt.xml
+chown repant:repant /home/repant/COSMOS/CFG/emptyreceipt.xml
+echo "File moved"
+############################################
+### MACHINE TYPE SPECIFIC CONFIGURATION ###
+############################################
+if [ "$MACHINE_TYPE" == "proline" ]; then
+	echo " "
+	echo "### PROLINE SPECIFIC CONFIGURATION ###"
+	### FullErFull
+	fullerfull=`grep FullErFull /home/repant/COSMOS/CFG/developer_config.ini`
+	echo " "
+	echo "$fullerfull"
+	if [ "$fullerfull" == "FullErFull=true" ]; then
+		echo "FullErFull already ok"
+	else
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Backroom FullErFull true
+		echo "FullErFull set to be true"
+		fullerfull=`grep FullErFull /home/repant/COSMOS/CFG/developer_config.ini`
+	fi
+	if [ "$fullerfull" == "FullErFull=true" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### Check_auto_bin_ticket
+	autobin=`grep Check_auto_bin_ticket /home/repant/COSMOS/CFG/user_config.ini`
+	echo " "
+	echo "$autobin"
+
+	if [ "$autobin" == "Check_auto_bin_ticket=false" ]; then
+		echo "Check_auto_bin_ticket already ok"
+	else
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/user_config.ini Clearing Check_auto_bin_ticket false
+		echo "Check_auto_bin_ticket set to be false"
+		autobin=`grep Check_auto_bin_ticket /home/repant/COSMOS/CFG/user_config.ini`
+	fi
+	if [ "$autobin" == "Check_auto_bin_ticket=false" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### LoyaltyCardReader
+	loyaltyport=`grep /dev/ttyLOYALTY /home/repant/COSMOS/CFG/developer_config.ini`
+	echo " "
+	echo "$loyaltyport"
+
+	if [ "$loyaltyport" == "Port=/dev/ttyLOYALTY" ]; then
+		echo "port_loyalty already ok"
+	else
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader BaudRate 9600
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader DataBits 8
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader Parity 0
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader Port /dev/ttyLOYALTY
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader ReadTimeout 1000
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader ReaderType 1
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini LoyaltyCardReader StopBits 1
+		echo "LoyaltyCardReader configured"
+		loyaltyport=`grep /dev/ttyLOYALTY /home/repant/COSMOS/CFG/developer_config.ini`
+	fi
+	if [ "$loyaltyport" == "Port=/dev/ttyLOYALTY" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### BagSealCardReader and Master Status
+	bagsealport=`grep ttyBAGSEAL /home/repant/COSMOS/CFG/developer_config.ini`
+	ismaster=`grep IsMaster /home/repant/COSMOS/CFG/developer_config.ini | tr -d '[:space:]'`
+	spimode=`grep spi_mode /home/repant/COSMOS/CFG/bevesortd.conf | tr -d '[:space:]'`
+	echo " "
+	echo "$bagsealport"
+	echo "$ismaster"
+	echo "$spimode"
+	## Check that Master is door-side machine
+	if [ "$spimode" == "spi_mode:<\$2\$>" ] && [ "$ismaster" == "IsMaster=false" ]; then
+		echo "Machine is not Master but has the master backroom line, Switching to Master Front"
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Chamber IsMaster true
+	elif [ "$spimode" == "spi_mode:<\$2\$>" ] && [ "$ismaster" == "IsMaster=true" ]; then
+		echo "Machine is Master and has the master backroom line, all good"
+
+	elif [ "$spimode" == "spi_mode:<\$1\$>" ] && [ "$ismaster" == "IsMaster=true" ]; then
+		echo "Machine is Master but has the wall-side backroom line, Switching to NOT Master"
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Chamber IsMaster false
+
+	elif [ "$spimode" == "spi_mode:<\$1\$>" ] && [ "$ismaster" == "IsMaster=false" ]; then
+		echo "Machine is not Master and has the wall-side backroom line, all good"
+
+	elif [ "$spimode" == "spi_mode:<\$0\$>" ] && [ "$ismaster" == "IsMaster=true" ]; then
+		echo "Machine is Master and has the only backroom line, all good"
+	else
+		echo "!!CHECK IS-MASTER STATUS!!"
+	fi
+	ismaster=`grep IsMaster /home/repant/COSMOS/CFG/developer_config.ini | tr -d '[:space:]'`
+	echo "$ismaster"
+	## Assign bag seal scanner to master
+	if [ "$bagsealport" == "Port=/dev/ttyBAGSEAL" ]; then
+		echo "port_Bagseal already ok"
+	elif [ "$bagsealport" != "Port=/dev/ttyBAGSEAL" ] && [ "$ismaster" == "IsMaster=true" ]; then
+		echo "Machine is Master, configuring bagseal scanner"
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader Port /dev/ttyBAGSEAL
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader ReadTimeout 1000
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader BaudRate 9600
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader DataBits 8
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader Parity 0
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini BagSealCardReader StopBits 1
+		echo "BagSealCardReader configured"
+		bagsealport=`grep ttyBAGSEAL /home/repant/COSMOS/CFG/developer_config.ini`
+	else
+		echo "Machine is not Master so we don't configure bagseal scanner"
+	fi
+	if [ "$bagsealport" == "Port=/dev/ttyBAGSEAL" ] && [ "$ismaster" == "IsMaster=true" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	elif [ "$ismaster" == "IsMaster=false" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### SiblingBinData
+	siblingdata=`grep GetSiblingBinData /home/repant/COSMOS/CFG/developer_config.ini`
+	doubleliner=`grep IsDoubleLiner /home/repant/COSMOS/CFG/developer_config.ini`
+	echo " "
+	echo "$siblingdata"
+	if [ "$doubleliner" == "IsDoubleLiner=true" ]; then
+		echo "Machine is double liner, check siblingdata"
+		if [ "$siblingdata" != "GetSiblingBinData=true" ]; then
+		php /home/repant/COSMOS/script/updini.php /home/repant/COSMOS/CFG/developer_config.ini Backroom GetSiblingBinData true
+		echo "Sibling data set to true"
+		fi
+		siblingdata=`grep GetSiblingBinData /home/repant/COSMOS/CFG/developer_config.ini`
+		if [ "$siblingdata" == "GetSiblingBinData=true" ]; then
+		echo "+1"
+		((correctcounter+=1))
+		else
+			echo "Something is wrong here with sibling data"
+		fi
+	elif [ "$doubleliner" == "IsDoubleLiner=false" ]; then
+		echo "Machine is single liner, skip sibling data check"
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### SET BIN RESET
+	binreset=$(grep "bin_reset" /home/repant/COSMOS/CFG/bevesortd.conf)
+	echo " "
+	echo "$binreset"
+	if [ "$binreset" != "bin_reset : <$5$>" ]; then
+
+		sudo -u $BASE_USER -i exec_multisort_service param 1 5 5
+		echo "bin reset set to 5"
+		binreset=$(grep "bin_reset" /home/repant/COSMOS/CFG/bevesortd.conf)
+	else
+		echo "bin reset already 5"
+	fi
+	if [ "$binreset" == "bin_reset : <$5$>" ]; then
+		echo "+1"
+		((correctcounter+=1))
+	fi
+	### Verify dev_config is accessible to repant
+	chown repant:repant /home/repant/COSMOS/CFG/developer_config.ini
+	### Backup and move 10-rvm-barcode-readers.rules file from inbox
+	# echo "backing up old 10-rvm-barcode-readers.rules file to outbox"
+	# cp /etc/udev/rules.d/10-rvm-barcode-readers.rules /home/repant/COSMOS/outbox/10-rvm-barcode-readers.rules.backup
+	echo " "
+	echo "Moving new 10-rvm-barcode-readers.rules file to udev"
+	mv /home/repant/COSMOS/inbox/10-rvm-barcode-readers.rules /etc/udev/rules.d/10-rvm-barcode-readers.rules
+	chown root:root /etc/udev/rules.d/10-rvm-barcode-readers.rules
+	echo "File moved"
+	udevadm control --reload-rules
+	udevadm trigger
+	echo "udevam reloaded"
+	echo " "
+	# echo "Check backroom version is above 5.6.6"
+	# echo "$(sudo -u $BASE_USER -i exec_multisort_service status)"
+	echo "$(cat /home/repant/COSMOS/LOG/LogHardware.txt | grep "Node version list:" | tail -1)"
+	line=$(cat /home/repant/COSMOS/LOG/LogHardware.txt | grep "Node version list:" | tail -1)
+	s=${line%\"*}
+	vals=${s##*\"}
+	echo "$vals"
+	base=566
+	ok=1
+	IFS='_' read -r -a arr <<< "$vals"
+	for v in "${arr[@]}"; do
+		if [[ $v == 1* ]]; then
+			echo "Sdrop version $v"
+			break
+		fi
+		if (( v < base )); then
+			echo "Error: $v is smaller than $base"
+			echo "!!!Backroom version is too old!!!" > /home/repant/COSMOS/outbox/feedback.txt
+			ok=0
+			break
+		fi
+	done
+	if [ "$ok" == 1 ]; then
+		echo "+1"
+		echo "Backroom versions are correct"
+		((correctcounter+=1))
+	fi
+	EXPECTED_COUNTER=12
+elif [ "$MACHINE_TYPE" == "standalone" ]; then
+	echo " "
+	echo "### STANDALONE CONFIGURATION - No additional steps needed ###"
+
+	# Remove 10-rvm-barcode-readers.rules if exists (not needed for standalone)
+	if [ -f /home/repant/COSMOS/inbox/10-rvm-barcode-readers.rules ]; then
+		echo "Removing 10-rvm-barcode-readers.rules (not needed for standalone)"
+		rm /home/repant/COSMOS/inbox/10-rvm-barcode-readers.rules
+		echo "File removed"
+	fi
+
+	EXPECTED_COUNTER=6
+fi
+### Check if all sections passed
+echo " "
+echo "$correctcounter"
+if [ "$correctcounter" == "$EXPECTED_COUNTER" ]; then
+	feedback+="All configurations OK"
+	echo "All configurations OK"
+	echo "Bagseal configurations OK" > /home/repant/COSMOS/outbox/feedback.txt
+else
+	feedback+="Check configurations!!!"
+	echo "Check configurations!!!"
+fi
+### Verify dev_config is accessible to repant
+chown repant:repant /home/repant/COSMOS/CFG/developer_config.ini
+### Restart services when not in use
+echo " "
+while true; do
+  last_bottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_bottleList";' -t)
+  last_bottle_receipt_id="${last_bottle_receipt_id#"${last_bottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_bottle_receipt_id="${last_bottle_receipt_id%"${last_bottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace characters
+
+  last_crate_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_crateList";' -t)
+  last_crate_receipt_id="${last_crate_receipt_id#"${last_crate_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_crate_receipt_id="${last_crate_receipt_id%"${last_crate_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  last_cratebottle_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select max("receiptID") from "t_cratebottleList";' -t)
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id#"${last_cratebottle_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  last_cratebottle_receipt_id="${last_cratebottle_receipt_id%"${last_cratebottle_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  next_receipt_id=$(psql -d cosmos_DB -U cosmos_user -c 'select "receiptNo" from "t_receiptManagement";' -t)
+  next_receipt_id="${next_receipt_id#"${next_receipt_id%%[![:space:]]*}"}"   # remove leading whitespace characters
+  next_receipt_id="${next_receipt_id%"${next_receipt_id##*[![:space:]]}"}"   # remove trailing whitespace character
+
+  if [ "$last_bottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_crate_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  elif [ "$last_cratebottle_receipt_id" == "$next_receipt_id" ] ; then
+	MACHINE_IN_USE=true
+  else
+	MACHINE_IN_USE=false
+  fi
+
+  if $MACHINE_IN_USE ; then
+	  echo "The machine is in use, wait"
+	  sleep 5
+  else
+	echo "Restart processes"
+	if [ "$MACHINE_TYPE" == "proline" ]; then
+		sudo -u $BASE_USER -i exec_multisort_service reset 99
+		sleep 5
+	fi
+	echo "Starting service"
+	sudo -u $BASE_USER -i $APP_DIR/script/service_start
+	sudo -u $BASE_USER -i $APP_DIR/script/service_stop
+	echo "Service ended"
+	echo "Finished"
+	break
+  fi
+done
+
+exit 0
